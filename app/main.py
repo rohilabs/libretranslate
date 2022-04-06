@@ -1,6 +1,6 @@
 import argparse
-import sys
 import operator
+import sys
 
 from app.app import create_app
 from app.default_values import DEFAULT_ARGUMENTS as DEFARGS
@@ -40,7 +40,7 @@ def main():
         default=DEFARGS['REQ_FLOOD_THRESHOLD'],
         type=int,
         metavar="<number>",
-        help="Set the maximum number of request limit offences per 4 weeks that a client can exceed before being banned. (%(default)s)",
+        help="Set the maximum number of request limit offences that a client can exceed before being banned. (%(default)s)",
     )
     parser.add_argument(
         "--batch-limit",
@@ -107,6 +107,9 @@ def main():
     )
     parser.add_argument(
         "--disable-files-translation", default=DEFARGS['DISABLE_FILES_TRANSLATION'], action="store_true", help="Disable files translation"
+    )
+    parser.add_argument(
+        "--disable-web-ui", default=DEFARGS['DISABLE_WEB_UI'], action="store_true", help="Disable web ui"
     )
 
     args = parser.parse_args()

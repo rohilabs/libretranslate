@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', function(){
             loadingFileTranslation: false,
             translatedFileUrl: false,
             filesTranslation: true,
+            frontendTimeout: 500
         },
         mounted: function(){
             var self = this;
@@ -53,6 +54,7 @@ document.addEventListener('DOMContentLoaded', function(){
                     self.suggestions = self.settings.suggestions;
                     self.supportedFilesFormat = self.settings.supportedFilesFormat;
                     self.filesTranslation = self.settings.filesTranslation;
+                    self.frontendTimeout = self.settings.frontendTimeout;
                 }else {
                     self.error = "Cannot load /frontend/settings";
                     self.loading = false;
@@ -78,6 +80,24 @@ document.addEventListener('DOMContentLoaded', function(){
                         self.loading = false;
                         self.error = "No languages available. Did you install the models correctly?"
                         return;
+                    }
+
+                    const sourceLanguage = self.langs.find(l => l.code === self.getQueryParam('source'))
+                    const isSourceAuto = !sourceLanguage && self.getQueryParam('source') === "auto"
+                    const targetLanguage = self.langs.find(l => l.code === self.getQueryParam('target'))
+
+                    if (sourceLanguage || isSourceAuto) {
+                        self.sourceLang = isSourceAuto ? "auto" : sourceLanguage.code
+                    }
+
+                    if (targetLanguage) {
+                        self.targetLang = targetLanguage.code
+                    }
+
+                    const defaultText = self.getQueryParam('q')
+
+                    if(defaultText) {
+                        self.inputText = decodeURI(defaultText)
                     }
 
                     self.loading = false;
@@ -145,9 +165,9 @@ document.addEventListener('DOMContentLoaded', function(){
                 return ['const res = await fetch("' + this.BaseUrl + '/translate", {',
                     '	method: "POST",',
                     '	body: JSON.stringify({',
-                    '		q: "' + this.$options.filters.escape(this.inputText) + '",',
-                    '		source: "' + this.$options.filters.escape(this.sourceLang) + '",',
-                    '		target: "' + this.$options.filters.escape(this.targetLang) + '",',
+                    '		q: ' + this.$options.filters.escape(this.inputText) + ',',
+                    '		source: ' + this.$options.filters.escape(this.sourceLang) + ',',
+                    '		target: ' + this.$options.filters.escape(this.targetLang) + ',',
                     '		format: "' + (this.isHtml ? "html" : "text") + '"',
                     '	}),',
                     '	headers: { "Content-Type": "application/json" }',
@@ -167,7 +187,7 @@ document.addEventListener('DOMContentLoaded', function(){
         },
         filters: {
             escape: function(v){
-                return v.replace('"', '\\\"');
+                return JSON.stringify(v);
             },
             highlight: function(v){
                 return Prism.highlight(v, Prism.languages.javascript, 'javascript');
@@ -193,8 +213,22 @@ document.addEventListener('DOMContentLoaded', function(){
             dismissError: function(){
                 this.error = '';
             },
+            getQueryParam: function (key) {
+                const params = new URLSearchParams(window.location.search);
+                return params.get(key)
+            },
+            updateQueryParam: function (key, value) {
+                let searchParams = new URLSearchParams(window.location.search)
+                searchParams.set(key, value);
+                let newRelativePathQuery = window.location.pathname + '?' + searchParams.toString();
+                history.pushState(null, '', newRelativePathQuery);
+            },
             handleInput: function(e){
                 this.closeSuggestTranslation(e)
+
+                this.updateQueryParam('source', this.sourceLang)
+                this.updateQueryParam('target', this.targetLang)
+                this.updateQueryParam('q', encodeURI(this.inputText))
 
                 if (this.timeout) clearTimeout(this.timeout);
                 this.timeout = null;
@@ -248,7 +282,7 @@ document.addEventListener('DOMContentLoaded', function(){
                     };
 
                     request.send(data);
-                }, '{{ frontendTimeout }}');
+                }, self.frontendTimeout);
             },
             copyText: function(e){
                 e.preventDefault();
@@ -318,6 +352,7 @@ document.addEventListener('DOMContentLoaded', function(){
             deleteText: function(e){
                 e.preventDefault();
                 this.inputText = this.translatedText = this.output = "";
+                this.$refs.inputTextarea.focus();
             },
             switchType: function(type) {
                 this.translationType = type;

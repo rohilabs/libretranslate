@@ -3,10 +3,12 @@ import os
 import tempfile
 import uuid
 from functools import wraps
+from html import unescape
 
 import argostranslatefiles
 from argostranslatefiles import get_supported_formats
-from flask import Flask, abort, jsonify, render_template, request, url_for, send_file
+from flask import (Flask, abort, jsonify, render_template, request, send_file,
+                   url_for)
 from flask_swagger import swagger
 from flask_swagger_ui import get_swaggerui_blueprint
 from translatehtml import translate_html
@@ -14,6 +16,7 @@ from werkzeug.utils import secure_filename
 
 from app import flood, remove_translated_files, security
 from app.language import detect_languages, transliterate
+
 from .api_keys import Database
 from .suggestions import Database as SuggestionsDatabase
 
@@ -99,7 +102,7 @@ def create_app(args):
 
     boot(args.load_only)
 
-    from app.language import languages
+    from app.language import load_languages
 
     app = Flask(__name__)
 
@@ -108,6 +111,7 @@ def create_app(args):
 
     if not args.disable_files_translation:
         remove_translated_files.setup(get_upload_dir())
+    languages = load_languages()
 
     # Map userdefined frontend languages to argos language object.
     if args.frontend_language_source == "auto":
@@ -132,13 +136,12 @@ def create_app(args):
 
     # Raise AttributeError to prevent app startup if user input is not valid.
     if frontend_argos_language_source is None:
-        raise AttributeError(
-            f"{args.frontend_language_source} as frontend source language is not supported."
-        )
+        frontend_argos_language_source = languages[0]
     if frontend_argos_language_target is None:
-        raise AttributeError(
-            f"{args.frontend_language_target} as frontend target language is not supported."
-        )
+        if len(languages) >= 2:
+            frontend_argos_language_target = languages[1]
+        else:
+            frontend_argos_language_target = languages[0]
 
     api_keys_db = None
 
@@ -173,11 +176,19 @@ def create_app(args):
                 if flood.has_violation(ip):
                     flood.decrease(ip)
 
-            if args.api_keys and args.require_api_key_origin:
+            if args.api_keys:
                 ak = get_req_api_key()
-
                 if (
-                        api_keys_db.lookup(ak) is None and request.headers.get("Origin") != args.require_api_key_origin
+                    ak and api_keys_db.lookup(ak) is None
+                ):
+                    abort(
+                        403,
+                        description="Invalid API key",
+                    )
+                elif (
+                    args.require_api_key_origin
+                    and api_keys_db.lookup(ak) is None
+                    and request.headers.get("Origin") != args.require_api_key_origin
                 ):
                     abort(
                         403,
@@ -208,6 +219,9 @@ def create_app(args):
     @app.route("/")
     @limiter.exempt
     def index():
+        if args.disable_web_ui:
+            abort(404)
+
         return render_template(
             "index.html",
             gaId=args.ga_id,
@@ -217,9 +231,12 @@ def create_app(args):
             version=get_version()
         )
 
-    @app.route("/javascript-licenses", methods=["GET"])
+    @app.get("/javascript-licenses")
     @limiter.exempt
     def javascript_licenses():
+        if args.disable_web_ui:
+            abort(404)
+
         return render_template("javascript-licenses.html")
 
     @app.route("/languages", methods=["GET", "POST"])
@@ -270,7 +287,7 @@ def create_app(args):
         response.headers.add("Access-Control-Max-Age", 60 * 60 * 24 * 20)
         return response
 
-    @app.route("/translate", methods=["POST"])
+    @app.post("/translate")
     @access_check
     def translate():
         """
@@ -429,18 +446,18 @@ def create_app(args):
                 else:
                     # Unable to accurately detect languages for short texts
                     candidate_langs = overall_candidates
-                source_langs.append(candidate_langs[0]["language"])
+                source_langs.append(candidate_langs[0])
 
                 if args.debug:
                     print(text_to_check, candidate_langs)
                     print("Auto detected: %s" % candidate_langs[0]["language"])
         else:
             if batch:
-                source_langs = [source_lang for text in q]
+                source_langs = [ {"confidence": 100.0, "language": source_lang} for text in q]
             else:
-                source_langs = [source_lang]
+                source_langs = [ {"confidence": 100.0, "language": source_lang} ]
 
-        src_langs = [next(iter([l for l in languages if l.code == source_lang]), None) for source_lang in source_langs]
+        src_langs = [next(iter([l for l in languages if l.code == source_lang["language"]]), None) for source_lang in source_langs]
 
         for idx, lang in enumerate(src_langs):
             if lang is None:
@@ -466,30 +483,47 @@ def create_app(args):
                     if text_format == "html":
                         translated_text = str(translate_html(translator, text))
                     else:
-                        translated_text = translator.translate(transliterate(text, target_lang=source_langs[idx]))
+                        translated_text = translator.translate(transliterate(text, target_lang=source_langs[idx]["language"]))
 
-                    results.append(translated_text)
-                return jsonify(
-                    {
-                        "translatedText": results
-                    }
-                )
+                    results.append(unescape(translated_text))
+                if source_lang == "auto":
+                    return jsonify(
+                        {
+                            "translatedText": results,
+                            "detectedLanguage": source_langs
+                        }
+                    )
+                else:
+                    return jsonify(
+                         {
+                            "translatedText": results
+                         }
+                    )
             else:
                 translator = src_langs[0].get_translation(tgt_lang)
 
                 if text_format == "html":
                     translated_text = str(translate_html(translator, q))
                 else:
-                    translated_text = translator.translate(transliterate(q, target_lang=source_langs[0]))
-                return jsonify(
-                    {
-                        "translatedText": translated_text
-                    }
-                )
+                    translated_text = translator.translate(transliterate(q, target_lang=source_langs[0]["language"]))
+
+                if source_lang == "auto":
+                    return jsonify(
+                        {
+                            "translatedText": unescape(translated_text),
+						    "detectedLanguage": source_langs[0]
+                        }
+                    )
+                else:
+                    return jsonify(
+                        {
+                            "translatedText": unescape(translated_text)
+                        }
+                    )
         except Exception as e:
             abort(500, description="Cannot translate text: %s" % str(e))
 
-    @app.route("/translate_file", methods=["POST"])
+    @app.post("/translate_file")
     @access_check
     def translate_file():
         """
@@ -622,7 +656,7 @@ def create_app(args):
         except Exception as e:
             abort(500, description=e)
 
-    @app.route("/download_file/<string:filename>", methods=["GET"])
+    @app.get("/download_file/<string:filename>")
     def download_file(filename: str):
         """
         Download a translated file
@@ -649,7 +683,7 @@ def create_app(args):
 
         return send_file(return_data, as_attachment=True, attachment_filename=download_filename)
 
-    @app.route("/detect", methods=["POST"])
+    @app.post("/detect")
     @access_check
     def detect():
         """
@@ -822,7 +856,7 @@ def create_app(args):
             }
         )
 
-    @app.route("/suggest", methods=["POST"])
+    @app.post("/suggest")
     @access_check
     def suggest():
         """
@@ -886,6 +920,15 @@ def create_app(args):
         s = request.values.get("s")
         source_lang = request.values.get("source")
         target_lang = request.values.get("target")
+
+        if not q:
+            abort(400, description="Invalid request: missing q parameter")
+        if not s:
+            abort(400, description="Invalid request: missing s parameter")
+        if not source_lang:
+            abort(400, description="Invalid request: missing source parameter")
+        if not target_lang:
+            abort(400, description="Invalid request: missing target parameter")
 
         SuggestionsDatabase().add(q, s, source_lang, target_lang)
         return jsonify({"success": True})

@@ -1,4 +1,4 @@
-argostranslate==1.6.1
+argostranslate==1.8.0
 Flask==2.0.3
 flask-swagger==0.2.14
 flask-swagger-ui==3.36.0
